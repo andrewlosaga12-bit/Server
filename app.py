@@ -1,6 +1,7 @@
 from flask import Flask, redirect, request, render_template
 import requests
 import os
+import json
 
 app = Flask(__name__)
 
@@ -17,6 +18,14 @@ DISCORD_AUTH_URL = "https://discord.com/api/oauth2/authorize"
 DISCORD_TOKEN_URL = "https://discord.com/api/oauth2/token"
 DISCORD_API_URL = "https://discord.com/api"
 
+def log_error(step, response):
+    """Log detail error Discord API ke console dan tampilkan di browser"""
+    try:
+        data = response.json()
+    except:
+        data = response.text
+    return f"[{step}] Status: {response.status_code} | Response: {data}"
+
 @app.route("/")
 def index():
     auth_url = (
@@ -31,9 +40,9 @@ def index():
 def callback():
     code = request.args.get("code")
     if not code:
-        return redirect("/error")
+        return render_template("error.html", message="Tidak ada code OAuth2.")
 
-    # Tukar kode dengan access token
+    # Tukar code dengan access token
     data = {
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
@@ -42,22 +51,27 @@ def callback():
         "redirect_uri": REDIRECT_URI,
         "scope": OAUTH_SCOPE,
     }
-
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     token_res = requests.post(DISCORD_TOKEN_URL, data=data, headers=headers)
+
     if token_res.status_code != 200:
-        return redirect("/error")
+        return render_template("error.html", message=log_error("OAuth Token", token_res))
 
     token_json = token_res.json()
-    access_token = token_json["access_token"]
+    access_token = token_json.get("access_token")
+
+    if not access_token:
+        return render_template("error.html", message="Gagal mendapatkan access token.")
 
     # Ambil data user
     user_res = requests.get(
         f"{DISCORD_API_URL}/users/@me",
         headers={"Authorization": f"Bearer {access_token}"}
     )
+
     if user_res.status_code != 200:
-        return redirect("/error")
+        return render_template("error.html", message=log_error("Ambil Data User", user_res))
+
     user = user_res.json()
 
     # Tambahkan user ke server
@@ -70,8 +84,11 @@ def callback():
         json={"access_token": access_token}
     )
 
+    if member_res.status_code not in (200, 201, 204):
+        return render_template("error.html", message=log_error("Tambah User ke Server", member_res))
+
     # Kirim notifikasi ke webhook
-    requests.post(WEBHOOK_URL, json={
+    webhook_res = requests.post(WEBHOOK_URL, json={
         "embeds": [
             {
                 "title": "🎉 User Baru Bergabung!",
@@ -84,14 +101,15 @@ def callback():
         ]
     })
 
-    if member_res.status_code in (200, 201, 204):
-        return render_template("success.html")
-    else:
-        return redirect("/error")
+    if webhook_res.status_code not in (200, 204):
+        return render_template("error.html", message=log_error("Kirim Webhook", webhook_res))
+
+    return render_template("success.html")
 
 @app.route("/error")
 def error():
-    return render_template("error.html")
+    message = request.args.get("message", "Terjadi kesalahan yang tidak diketahui.")
+    return render_template("error.html", message=message)
 
 if __name__ == "__main__":
     app.run(debug=True)
